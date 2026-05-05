@@ -15,6 +15,8 @@ class RSSM(nn.Module):
         super().__init__()
         self.det_dim = det_dim
         self.stoch_dim = stoch_dim
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
 
         # Representation: obs -> stochastic posterior
         self.obs_encoder = nn.Sequential(
@@ -62,7 +64,7 @@ class RSSM(nn.Module):
         det = self.gru(torch.cat([prev_stoch, action], dim=-1), prev_det)
         prior_params = self.prior_net(det)
         prior = self._parse_dist(prior_params)
-        stoch = prior.mean  # deterministic
+        stoch = prior.mean
         return det, stoch, prior
 
     def get_reward(self, det, stoch):
@@ -70,13 +72,11 @@ class RSSM(nn.Module):
         return self.reward_head(torch.cat([det, stoch], dim=-1)).squeeze(-1)
 
     def unroll_imagine(self, det_0, stoch_0, actions, deterministic=False):
-        """Autoregressive imagination.
+        """Autoregressive imagination over H steps.
 
         Args:
             det_0, stoch_0: initial states [B, dim]
             actions: [B, H, act_dim]
-            deterministic: if True, use mean instead of sample
-
         Returns:
             priors: list of H Independent Normal distributions
             dets: [B, H, det_dim]
@@ -101,7 +101,6 @@ class RSSM(nn.Module):
         return self._parse_dist(prior_params)
 
     def _parse_dist(self, params):
-        """Parse mean+std params into Independent Normal."""
         mean, std = params.chunk(2, dim=-1)
         std = F.softplus(std) + 0.1
         return td.Independent(td.Normal(mean, std), 1)

@@ -1,80 +1,62 @@
 # Speculative Decoding for World Model Rollouts
 
-Adapting speculative decoding from LLMs to continuous latent spaces for Model Predictive Control (MPC) with Recurrent State-Space Models (RSSMs).
+Adapting speculative decoding to accelerate MPC planning with RSSM world models.
 
-## Key Innovation
+## Key Idea
 
-**Adaptive KL Threshold**: In continuous latent spaces, distributional errors compound over the planning horizon. We use an adaptive threshold:
-
-```
-ε_t = ε₀ + α·t
-```
-
-This prevents exponential acceptance rate drop-off that occurs with fixed thresholds.
+Instead of sequentially rolling out a large GRU-based RSSM for H timesteps (O(H)), we use a **non-autoregressive draft MLP** that predicts all H future states in a single forward pass (O(1)). The target model then verifies the draft's predictions in parallel, accepting a prefix where distributions match.
 
 ## Architecture
 
-| Component | Description |
-|-----------|-------------|
-| **Target RSSM** | Full-size RSSM (GRU + Gaussian stochastic states, ~50K params) |
-| **Draft RSSM** | 4x smaller distilled RSSM (~12K params) |
-| **Parallel Verifier** | Batched target verification using draft's projected states |
-| **Adaptive Acceptance** | KL-based acceptance with cumprod prefix mask |
-| **CEM Planner** | Cross-Entropy Method with speculative rollout benchmarking |
+| Component | Type | Rollout | Params |
+|-----------|------|---------|--------|
+| **Target** | Deep GRU-based RSSM | Sequential O(H) | ~2M |
+| **Draft** | Non-autoregressive MLP | Single pass O(1) | ~200K |
 
-## Pipeline
+### Adaptive Acceptance
+- KL threshold relaxes over horizon: `ε_t = ε₀ + α·t`
+- Accept contiguous prefix via `cumprod` mask
+- On rejection at step k: resample from target, re-draft remaining steps
+
+## Files
 
 ```
-1. Draft Model generates trajectory (fast, autoregressive, deterministic mean)
-2. Target Model verifies ALL steps (sequential GRU but using draft's projected stochs)
-3. Adaptive KL acceptance determines valid prefix length
-4. Rejected steps use Target's mean to correct trajectory
-5. CEM planner uses corrected rollouts for action optimization
+src/
+├── rssm.py           # Target RSSM (GRU + stochastic states)
+├── ml_draft.py       # Non-autoregressive draft MLP
+├── acceptance.py     # Adaptive KL acceptance criteria
+├── parallel_verify.py # Target verification of draft predictions
+├── cem_planner.py    # CEM planner (target-only + speculative modes)
+├── utils.py          # Env wrappers
+└── main.py           # Full pipeline: train → distill → benchmark
+scripts/
+├── run_all.sh        # Run pipeline
+└── sbatch_pipeline.sh # Slurm submission script
 ```
 
 ## Quick Start
 
 ```bash
-# On Rivanna
-cd /scratch/qzp4ta/speculative-mpc
-source .venv/bin/activate
+# Local (CPU)
+pip install torch gymnasium numpy
+python -m src.main
 
-# Run directly
-python -m src.train_cartpole
-
-# Or submit to Slurm
-sbatch scripts/train_cartpole.sh
+# Rivanna (GPU)
+sbatch scripts/sbatch_pipeline.sh
 ```
 
-## Replication Steps
+## Results
 
-1. **Train Target RSSM** on CartPole-v1 (100 epochs, sequence training)
-2. **Distill Draft RSSM** via state alignment MSE (80 epochs)
-3. **Benchmark**: Compare target-only vs speculative rollout wall-clock time
+See `results/results.json` after training. Target metrics:
+- Draft speedup: >10x (single pass vs sequential)
+- Speculative speedup (draft + verify): >2x
+- Reward retention: ≥98% of target-only CEM
+- Acceptance rate: monitored via adaptive KL threshold
 
-## Expected Results
+## Training Pipeline
 
-| Metric | Target |
-|--------|--------|
-| Speedup | ≥2x |
-| Acceptance rate | Varies with ε₀, α |
-| Draft size | ~25% of target params |
-
-## File Structure
-
-```
-src/
-├── rssm.py           # Target RSSM with GRU
-├── draft_model.py    # 4x smaller draft RSSM with projection layers
-├── parallel_verify.py # Target verification using draft states
-├── acceptance.py     # Adaptive KL acceptance + speculative rollout
-├── cem_planner.py    # CEM planner with benchmarking
-└── train_cartpole.py # End-to-end CartPole experiment
-scripts/
-└── train_cartpole.sh # Slurm sbatch script
-```
-
-## References
-
-- Chen et al. (2023) - "Accelerating Large Language Model Decoding with Speculative Sampling"
-- Hafner et al. (2023) - "Mastering Diverse Domains through World Models" (DreamerV3)
+1. **Collect data**: 500 random CartPole-v1 episodes
+2. **Train target**: 300 epochs, GRU-based RSSM (obs→posterior, transition prior, reward)
+3. **Distill draft**: 300 epochs, MSE + KL matching to target's stochastic states
+4. **Benchmark**: Speed comparison (target vs draft vs speculative)
+5. **MPC evaluation**: CEM planning on actual CartPole episodes

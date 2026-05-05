@@ -15,3 +15,29 @@ Collected 4916 transitions from 200 episodes
 
 --- Training Target RSSM ---
   Target epoch 25/100 | Loss: 0.1343 | KL: 0.3721 | Rew: 0.0971
+  Target epoch 50/100 | Loss: 0.0735 | KL: 0.1635 | Rew: 0.0572
+  Target epoch 75/100 | Loss: 0.0439 | KL: 0.1319 | Rew: 0.0307
+  Target epoch 100/100 | Loss: 0.0341 | KL: 0.1165 | Rew: 0.0225
+
+--- Distilling Draft RSSM ---
+  Distill epoch 20/80 | Alignment Loss: 0.7768
+  Distill epoch 40/80 | Alignment Loss: 0.6356
+  Distill epoch 60/80 | Alignment Loss: 0.5962
+  Distill epoch 80/80 | Alignment Loss: 0.5852
+
+--- Benchmarking ---
+
+==================================================
+RESULTS
+==================================================
+Target params:      263,521
+Draft params:       12,988 (4.9%)
+Target time:        5.07 ms
+Speculative time:   14.11 ms
+Speedup:            0.36x
+Acceptance rate:    0.0%
+Mean KL:            190.8465
+==================================================
+Results saved to /sfs/weka/scratch/qzp4ta/speculative-mpc/results/results.json
+Done!
+End: Tue May  5 02:26:09 EDT 2026

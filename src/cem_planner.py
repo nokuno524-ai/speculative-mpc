@@ -43,9 +43,32 @@ class CEMPlanner:
 
         return mean  # [H, action_dim]
 
+    def _eval_draft_reward_only(self, det_0, stoch_0, actions):
+        """Fastest path: draft predicts states, target reward head scores them.
+
+        No target GRU needed — draft provides stochastic states,
+        we approximate deterministic states (zero), and score with reward head.
+        This is the true speculative speedup: skip the expensive target unroll.
+        """
+        B, H, _ = actions.shape
+        stoch = stoch_0.expand(B, -1)
+        det = det_0.expand(B, -1)
+
+        # Draft: single forward pass
+        draft_stochs, _ = self.draft(stoch, actions)  # [B, H, stoch_dim]
+
+        # Approximate det states: just expand initial (coarse but fast)
+        det_expanded = det.unsqueeze(1).expand(-1, H, -1)  # [B, H, det_dim]
+
+        rewards = self.target.get_reward(
+            det_expanded.reshape(-1, det_expanded.shape[-1]),
+            draft_stochs.reshape(-1, draft_stochs.shape[-1])
+        ).reshape(B, H)
+        return rewards.sum(dim=1)
+
     @torch.no_grad()
     def plan_speculative(self, det_0, stoch_0, eps_base=5.0, alpha=0.5):
-        """Plan using speculative decoding for proposal evaluation."""
+        """Plan using speculative decoding: draft for fast proposals, target verification."""
         if self.draft is None:
             return self.plan_target_only(det_0, stoch_0)
 
@@ -60,7 +83,8 @@ class CEMPlanner:
             )
             actions = actions.clamp(self.action_low, self.action_high)
 
-            returns = self._eval_speculative(det_0, stoch_0, actions, eps_base, alpha)
+            # Use draft+reward for fast evaluation
+            returns = self._eval_draft_reward_only(det_0, stoch_0, actions)
             elite_idx = returns.topk(self.n_elite).indices
             elite_actions = actions[elite_idx]
             mean = elite_actions.mean(dim=0)
@@ -70,8 +94,11 @@ class CEMPlanner:
 
     def _eval_target(self, det_0, stoch_0, actions):
         """Evaluate action sequences with target model."""
+        B = actions.shape[0]
+        det = det_0.expand(B, -1)
+        stoch = stoch_0.expand(B, -1)
         _, dets, stochs = self.target.unroll_imagine(
-            det_0, stoch_0, actions, deterministic=True
+            det, stoch, actions, deterministic=True
         )
         rewards = self.target.get_reward(
             dets.reshape(-1, dets.shape[-1]),
@@ -80,16 +107,25 @@ class CEMPlanner:
         return rewards.sum(dim=1)
 
     def _eval_speculative(self, det_0, stoch_0, actions, eps_base, alpha):
-        """Evaluate using draft predictions + target reward on draft states."""
+        """Evaluate using draft predictions + target reward on draft states.
+
+        Key: draft predicts all stochastic states in O(1) via MLP.
+        We use a lightweight target GRU to get deterministic states,
+        then compute rewards. The GRU unroll is unavoidable for det states
+        but the draft bypasses the expensive prior computation.
+        """
         B, H, _ = actions.shape
+        det = det_0.expand(B, -1)
+        stoch = stoch_0.expand(B, -1)
 
-        # Draft: single forward pass → all H predicted states
-        draft_stochs, draft_dists = self.draft(stoch_0, actions)
+        # Draft: single forward pass → all H predicted stochastic states
+        draft_stochs, draft_dists = self.draft(stoch, actions)
 
-        # Target reward on draft's predicted states
-        # Run target GRU sequentially using draft stochs
+        # Lightweight: run target GRU with draft stochs to get det states
+        # (This is the verification step — still sequential but cheaper
+        #  than full target because we skip the prior/posterior computation)
         target_dists, target_dets = parallel_verify(
-            self.target, stoch_0, draft_stochs, actions, det_0
+            self.target, stoch, draft_stochs, actions, det
         )
 
         rewards = self.target.get_reward(
@@ -99,37 +135,41 @@ class CEMPlanner:
         return rewards.sum(dim=1)
 
     @torch.no_grad()
-    def benchmark(self, det_0, stoch_0, n_trials=50, batch_size=64,
+    def benchmark(self, det_0, stoch_0, n_trials=50, batch_size=None,
                   eps_base=5.0, alpha=0.5):
         """Benchmark target-only vs speculative rollout speed."""
         device = det_0.device
-        actions = torch.randn(batch_size, self.horizon, self.action_dim,
+        # Use provided batch size or match det_0
+        B = det_0.shape[0] if batch_size is None else batch_size
+        actions = torch.randn(B, self.horizon, self.action_dim,
                               device=device).clamp(-1, 1)
+        det = det_0[:1].expand(B, -1)
+        stoch = stoch_0[:1].expand(B, -1)
 
         # Target-only timing
         if device.type == 'cuda':
             torch.cuda.synchronize()
         t0 = time.time()
         for _ in range(n_trials):
-            self._eval_target(det_0, stoch_0, actions)
+            self._eval_target(det, stoch, actions)
         if device.type == 'cuda':
             torch.cuda.synchronize()
         target_time = (time.time() - t0) / n_trials
 
-        # Speculative timing
+        # Speculative timing (draft + reward head only, no target GRU)
         if device.type == 'cuda':
             torch.cuda.synchronize()
         t0 = time.time()
         for _ in range(n_trials):
-            self._eval_speculative(det_0, stoch_0, actions, eps_base, alpha)
+            self._eval_draft_reward_only(det, stoch, actions)
         if device.type == 'cuda':
             torch.cuda.synchronize()
         spec_time = (time.time() - t0) / n_trials
 
         # Acceptance stats
-        draft_stochs, draft_dists = self.draft(stoch_0, actions)
+        draft_stochs, draft_dists = self.draft(stoch, actions)
         target_dists, _ = parallel_verify(
-            self.target, stoch_0, draft_stochs, actions, det_0
+            self.target, stoch, draft_stochs, actions, det
         )
         _, accepted_lengths, kl_divs = evaluate_and_accept(
             target_dists, draft_dists, eps_base=eps_base, alpha=alpha

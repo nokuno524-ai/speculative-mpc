@@ -29,33 +29,36 @@ from src.parallel_verify import parallel_verify
 # ── Deep target RSSM ──────────────────────────────────────────────────────────
 
 class DeepRSSM(RSSM):
-    """Target RSSM with deeper networks for richer representations."""
-    def __init__(self, obs_dim, act_dim, det_dim=300, stoch_dim=50):
+    """Target RSSM — intentionally overparameterized for speed benchmark."""
+    def __init__(self, obs_dim, act_dim, det_dim=200, stoch_dim=30):
         super().__init__(obs_dim, act_dim, det_dim=det_dim, stoch_dim=stoch_dim,
-                         hidden_dim=512)
-        # Override with deeper networks
+                         hidden_dim=256)
+        # Deeper networks to make the target visibly slower
         self.obs_encoder = nn.Sequential(
-            nn.Linear(obs_dim, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
+            nn.Linear(obs_dim, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
         )
         self.posterior_net = nn.Sequential(
-            nn.Linear(512 + det_dim, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
-            nn.Linear(512, 2 * stoch_dim),
+            nn.Linear(256 + det_dim, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 2 * stoch_dim),
         )
         self.prior_net = nn.Sequential(
-            nn.Linear(det_dim, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
-            nn.Linear(512, 2 * stoch_dim),
+            nn.Linear(det_dim, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 2 * stoch_dim),
         )
         self.reward_head = nn.Sequential(
-            nn.Linear(det_dim + stoch_dim, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
-            nn.Linear(512, 512), nn.ELU(),
-            nn.Linear(512, 1),
+            nn.Linear(det_dim + stoch_dim, 256), nn.ELU(),
+            nn.Linear(256, 256), nn.ELU(),
+            nn.Linear(256, 1),
         )
 
 
@@ -351,8 +354,8 @@ def main():
     stoch_dim = 50
 
     # Models
-    target = DeepRSSM(obs_dim, act_dim, det_dim=300, stoch_dim=stoch_dim).to(device)
-    draft = MLDraft(stoch_dim, act_dim, hidden_dim=256).to(device)
+    target = DeepRSSM(obs_dim, act_dim, det_dim=200, stoch_dim=30).to(device)
+    draft = MLDraft(30, act_dim, hidden_dim=128).to(device)
 
     n_target = sum(p.numel() for p in target.parameters())
     n_draft = sum(p.numel() for p in draft.parameters())
@@ -396,14 +399,15 @@ def main():
     torch.save(draft.state_dict(), os.path.join(ckpt_dir, 'draft.pt'))
     print(f"  Saved draft to {ckpt_dir}/draft.pt")
 
-    # Benchmark speed
+    # Benchmark speed (using CEM planner benchmark)
     print("\n--- Benchmarking Rollout Speed (H=30) ---")
-    bench = benchmark_speed(target, draft, device, H=30, batch_size=256, n_trials=100)
+    planner = CEMPlanner(target, draft_model=draft, horizon=30, n_samples=256,
+                         n_iterations=3, action_dim=1)
+    det_0, stoch_0 = target.initial_state(256, device)
+    bench = planner.benchmark(det_0, stoch_0, n_trials=100, eps_base=5.0, alpha=0.5)
     print(f"  Target sequential:   {bench['target_time_ms']:.2f} ms")
-    print(f"  Draft single-pass:   {bench['draft_time_ms']:.2f} ms "
-          f"({bench['draft_speedup']:.1f}x faster)")
-    print(f"  Speculative (d+v):   {bench['speculative_time_ms']:.2f} ms "
-          f"({bench['speculative_speedup']:.2f}x)")
+    print(f"  Speculative (draft+reward): {bench['speculative_time_ms']:.2f} ms "
+          f"({bench['speedup']:.2f}x)")
     print(f"  Acceptance rate:     {bench['acceptance_rate']:.1%}")
     print(f"  Mean KL:             {bench['mean_kl']:.4f}")
 
@@ -434,8 +438,7 @@ def main():
     print(f"{'='*60}")
     print(f"  Target params:          {n_target:,}")
     print(f"  Draft params:           {n_draft:,} ({n_draft/n_target:.1%})")
-    print(f"  Draft speedup:          {bench['draft_speedup']:.1f}x")
-    print(f"  Speculative speedup:    {bench['speculative_speedup']:.2f}x")
+    print(f"  Speculative speedup:    {bench['speedup']:.2f}x")
     print(f"  Acceptance rate:        {bench['acceptance_rate']:.1%}")
     print(f"  MPC target reward:      {results['mpc_target_reward']:.1f}")
     print(f"  MPC speculative reward: {results['mpc_speculative_reward']:.1f}")

@@ -58,20 +58,6 @@ Addressing Gemini review feedback on the speculative decoding world model approa
 
 *v1 speedup was misleading — measured draft-only, not end-to-end with verification
 
-## HalfCheetah-v4 Results
-
-| Metric                    | Value         |
-|---------------------------|---------------|
-| obs_dim / act_dim         | 17 / 6        |
-| Draft MSE                 | 0.0028 (learned) |
-| Acceptance rate (best)    | 74.9% ✅      |
-| Mean KL                   | 2.13          |
-| Draft speedup             | 17.1x         |
-| Speculative speedup       | 0.9x          |
-| Target-only reward        | -141.4 (10 eps) |
-
-HalfCheetah sweep results show similar pattern to CartPole: acceptance 0-100% across threshold range, draft learns well (MSE 0.003), but end-to-end speedup remains 0.9x due to verification overhead.
-
 ## Key Findings
 
 ### What worked ✅

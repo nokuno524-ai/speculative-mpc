@@ -16,9 +16,10 @@
 | L4_D256_S10000 | 3,417,604 | 304.2% | 1.000 | 1.000 | 1.15x |
 | L2_D512_S10000 | 7,083,780 | 630.5% | 1.000 | 1.000 | 0.83x |
 | L4_D512_S10000 | 13,388,548 | 1191.7% | 1.000 | 1.000 | 0.44x |
-| L6_D256_S15000 | 4,997,124 | 444.8% | 1.000 | 1.000 | ~0.8x* |
+| L6_D256_S15000 | 4,997,124 | 444.8% | 1.000 | 1.000 | 0.87x |
+| L4_D256_S20000 | 3,417,604 | 304.2% | 1.000 | 1.000 | 1.29x |
 
-*Best: **L2_D256** — smallest draft that still outperforms the target.*
+*Best: **L2_D256** — smallest competent draft. All configs achieve 100% acceptance.*
 
 ### HalfCheetah-v4 — Draft Architecture Sweep
 

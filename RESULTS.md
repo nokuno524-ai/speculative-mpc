@@ -1,104 +1,58 @@
-# Speculative MPC — Round 2 Results
+# Round 4: Hybrid Coarse-to-Fine CEM — CartPole-v1
 
-## Overview
-Addressing Gemini review feedback on the speculative decoding world model approach. Key issues identified: 100% acceptance rate (red flag), 87% reward retention, both models trained on random data.
+## Approach
+Combine jump-ahead (fast but inaccurate) with target model (slow but accurate):
+1. Evaluate all N=512 candidates with jump-ahead model (coarse)
+2. Select top-K candidates
+3. Re-evaluate top-K with target model (fine)
+4. CEM update from fine-evaluated elites
 
-## Changes Made
+## Jump-Ahead Model Quality (Persistent Problem)
+- **MSE: 0.687** (barely improved from r3's 0.60)
+- **Cosine similarity: 0.056** (near zero — state prediction essentially random)
+- **Spearman ranking correlation: 0.39** (weak but non-trivial)
+- Top-50 overlap with target's top-100: 92% (reasonable at large K)
+- Architecture: Transformer encoder + residual connections, 178% of target params
+- Tried: normalized targets, cosine loss, AdamW, cosine LR schedule, gradient clipping
+- **State prediction for CartPole RSSM latent space appears fundamentally hard**
 
-### 1. Epsilon-Greedy Data Collection
-- **Before**: 500 episodes, purely random actions
-- **After**: 10,000 episodes, ε=0.1 (greedy heuristic + 10% random)
-- **Result**: 200K transitions (vs 11K before), much better training data quality
-- Average episode reward: ~40 (vs random baseline ~20)
+## Results
 
-### 2. Improved Draft Architecture (CausalConvDraft)
-- **Before**: Simple MLP, each timestep sees only `stoch_0 + action_t` (no temporal context)
-- **After**: Causal 1D convolution over full action sequence + positional encoding
-- **Result**: Draft MSE improved from **0.6 (stuck)** → **0.000065** (actually learning!)
-- Key insight: Draft must predict *prior* states (not posterior), since it lacks observations
+| Method | Reward | Time (ms) | Retention | Speedup | Rollouts Saved |
+|--------|--------|-----------|-----------|---------|----------------|
+| Target-only | 16.9 ± 6.9 | 690 | 100.0% | 1.00x | 0% |
+| Jump-only | 13.9 ± 3.9 | 206 | 82.5% | 3.35x | 100% |
+| Hybrid(K=5) | 17.1 ± 4.6 | 933 | 101.2% | 0.74x | 99% |
+| Hybrid(K=10) | 16.4 ± 7.7 | 901 | 97.6% | 0.77x | 98% |
+| Hybrid(K=20) | 15.6 ± 5.4 | 900 | 92.6% | 0.77x | 96% |
+| Hybrid(K=50) | 19.1 ± 7.9 | 1114 | 113.6% | 0.62x | 90% |
 
-### 3. KL Threshold Sweep
-- **Before**: Used fixed threshold (ε₀=5.0, α=0.5), always got 100% acceptance
-- **After**: Adaptive sweep based on measured KL divergence
-- Sweep range automatically calibrated to actual KL (mean KL ≈ 1.6)
+## Analysis
 
-**CartPole KL Sweep Results:**
+### ✅ Reward retention solved
+Hybrid CEM achieves 93-114% retention across all K values. The coarse-to-fine approach works as intended — target model re-evaluation ensures action quality.
 
-| ε₀    | α     | Acceptance Rate | Median Acc. Length |
-|-------|-------|----------------|-------------------|
-| 0.001 | 0.000 | 0.0%           | 0                 |
-| 0.050 | 0.000 | 0.0%           | 0                 |
-| 0.324 | 0.005 | 3.5%           | 0                 |
-| 0.811 | 0.000 | 5.0%           | 0                 |
-| 1.298 | 0.010 | 10.2%          | 1                 |
-| **1.622** | **0.000** | **30.0%** | **9**         |
-| **2.433** | **0.001** | **72.5%** | **19**        |
-| 3.244 | 0.000 | 100.0%         | 30                |
+### ❌ No end-to-end speedup
+All hybrid variants are **slower** than target-only (0.62-0.77x). Root cause:
+1. **Coarse step adds ~250ms** overhead for evaluating 512 candidates with jump-ahead
+2. **Fine step still costs ~660-830ms** for K target rollouts
+3. **Target rollouts on GPU are batch-efficient** — even K=5 takes 679ms (batched GPU compute)
+4. The GPU is not the bottleneck — it's the CEM iteration count and overhead
 
-**Best operating point**: ε₀=2.43, α=0.001 → 72.5% acceptance (in target 70-90% range) ✅
+### Why the jump-ahead model can't learn state prediction
+- MSE stuck at ~0.68 regardless of architecture (MLP, transformer, residual, normalization)
+- Cosine sim ~0.06 means predicted states point in random directions
+- **Hypothesis**: The RSSM stochastic state space is nearly isotropic (std ≈ 0.75-0.83 across all dims) — states are spread uniformly and k=5 step transitions are hard to predict from state+actions alone (would need the deterministic GRU state too)
 
-### 4. HalfCheetah-v4 Support
-- Continuous action space (6-dim), more complex dynamics
-- obs_dim=17, act_dim=6
-- Data collection in progress (1K episodes)
+### The real bottleneck
+On CartPole with a small model, GPU-batched target rollouts are already fast (~690ms for 512×5 rollouts). The overhead of maintaining a separate model and doing two evaluation passes outweighs any savings from fewer target rollouts.
 
-## CartPole Results Summary
+## Verdict
+**⚠️ Another negative result.** The hybrid coarse-to-fine approach correctly preserves reward quality but doesn't achieve speedup because:
+1. Jump-ahead state prediction quality is too poor for meaningful coarse filtering
+2. GPU-batched target rollouts leave little room for improvement on small problems
 
-| Metric                    | Round 1 (v1)  | Round 2 (v2)   | Target    |
-|---------------------------|---------------|----------------|-----------|
-| Data collection           | 500 eps random| 10K eps ε=0.1  | Expert    |
-| Draft MSE                 | 0.60 (stuck)  | 0.000065       | Low       |
-| Acceptance rate           | 100% ⚠️       | 72.5% ✅       | 70-90%   |
-| Mean KL divergence        | 0.0013        | 1.62           | Non-trivial |
-| Draft-only speedup        | 39x           | 17x            | High      |
-| Speculative speedup       | 22x*          | 0.9x           | >1x       |
-| Reward retention          | 87%           | 55% ⚠️         | >95%      |
-| MPC target reward         | 20.0          | 21.5           | Higher    |
-| MPC speculative reward    | 17.4          | 11.8           | Higher    |
-
-*v1 speedup was misleading — measured draft-only, not end-to-end with verification
-
-## HalfCheetah-v4 Results
-
-| Metric                    | Value         |
-|---------------------------|---------------|
-| obs_dim / act_dim         | 17 / 6        |
-| Draft MSE                 | 0.0028 (learned) |
-| Acceptance rate (best)    | 74.9% ✅      |
-| Mean KL                   | 2.13          |
-| Draft speedup             | 17.1x         |
-| Speculative speedup       | 0.9x          |
-| Target-only reward        | -141.4 (10 eps) |
-
-HalfCheetah sweep results show similar pattern to CartPole: acceptance 0-100% across threshold range, draft learns well (MSE 0.003), but end-to-end speedup remains 0.9x due to verification overhead.
-
-## Key Findings
-
-### What worked ✅
-1. **KL sweep is meaningful** — we can now measure a real acceptance boundary
-2. **Draft actually learns** — MSE dropped from 0.6 → 0.000065 by training on prior states
-3. **Acceptance rate in target range** — 72.5% (was 100%, now realistic)
-4. **Draft model is 17x faster** per forward pass than target
-
-### What didn't work ⚠️
-1. **End-to-end speedup is 0.9x** (slower!) — the `parallel_verify` step still runs the target GRU sequentially, negating the draft speedup
-2. **Reward retention dropped to 55%** — the speculative planner uses draft states with approximated (zero) det states, leading to poor reward predictions
-3. **No real planning improvement** — the CEM planner with speculative rollouts doesn't help because verification cost dominates
-
-### Root Cause Analysis
-The speculative decoding framework from LLMs doesn't directly translate to world models because:
-- In LLMs, verification is cheap (single forward pass to compare token distributions)
-- In RSSMs, verification requires running the target GRU sequentially (O(H)), which is the same cost as the original rollout
-- The draft's speedup (parallel prediction) is negated by the verification cost
-
-### Potential Solutions (Future Work)
-1. **Accept unverfied draft rollouts for CEM proposal** — use draft for fast candidate generation, then only verify the top-k candidates with target
-2. **Asynchronous verification** — overlap draft prediction with target verification
-3. **Draft-based reward head** — train a separate lightweight reward predictor on draft states
-4. **Diffusion-style verification** — multi-step refinement instead of accept/reject
-
-## Files Changed
-- `src/main_v2.py` — Full rewrite with epsilon-greedy collection, KL sweep, multi-env support
-- `src/ml_draft_v2.py` — CausalConvDraft architecture with temporal context
-- `scripts/run_cartpole.sh` — A6000 partition, 1h timeout
-- `scripts/run_cheetah.sh` — HalfCheetah-v4 experiment
+**Possible paths forward:**
+- Test on larger problems (HalfCheetah, humanoid) where target rollouts are genuinely expensive
+- Use deterministic state from target GRU alongside jump-ahead stochastic state
+- Skip state prediction entirely — just train a direct Q-function / return predictor

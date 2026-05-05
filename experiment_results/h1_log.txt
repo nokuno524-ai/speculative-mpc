@@ -1,0 +1,7 @@
+Device: cuda
+H=  5 | draft=1.03ms | verify=4.25ms | target=2.92ms | verify/target=1.457
+H= 10 | draft=1.01ms | verify=7.33ms | target=5.85ms | verify/target=1.253
+H= 20 | draft=1.01ms | verify=13.43ms | target=11.43ms | verify/target=1.175
+H= 30 | draft=1.23ms | verify=19.69ms | target=17.15ms | verify/target=1.148
+H= 50 | draft=1.78ms | verify=32.41ms | target=28.59ms | verify/target=1.134
+Saved to /sfs/weka/scratch/qzp4ta/speculative-mpc/experiment_results/

@@ -1,0 +1,24 @@
+Device: cuda
+
+=== Training Transformer Transition ===
+  Step 0: loss=0.6676
+  Step 500: loss=0.0204
+  Step 1000: loss=0.0059
+  Step 1500: loss=0.0047
+  Step 2000: loss=0.0041
+  Step 2500: loss=0.0039
+  Step 3000: loss=0.0039
+  Step 3500: loss=0.0033
+  Step 4000: loss=0.0039
+  Step 4500: loss=0.0039
+
+=== Timing ===
+H=  5 | GRU=2.88ms | Trans=1.82ms | 1.58x
+H= 10 | GRU=5.69ms | Trans=2.58ms | 2.20x
+H= 20 | GRU=11.31ms | Trans=4.30ms | 2.63x
+H= 30 | GRU=16.88ms | Trans=6.02ms | 2.80x
+H= 50 | GRU=28.22ms | Trans=9.41ms | 3.00x
+
+=== Speculative Acceptance ===
+Transformer target acceptance: 0.646 ± 0.036
+Saved to /sfs/weka/scratch/qzp4ta/speculative-mpc/experiment_results/

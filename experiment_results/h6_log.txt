@@ -1,0 +1,15 @@
+Device: cuda
+Trial 0/20
+Trial 5/20
+Trial 10/20
+Trial 15/20
+
+Baseline: reward=12.23, time=44.8ms
+   K      Ret      Spd
+   1    0.998     0.90x
+   2    0.998     1.04x
+   3    0.998     1.03x
+   5    0.998     1.04x
+  10    0.998     1.04x
+  20    0.998     0.97x
+Saved to /sfs/weka/scratch/qzp4ta/speculative-mpc/experiment_results/

@@ -1,0 +1,16 @@
+Device: cuda
+=== Finding outlier dims ===
+Outlier dims: [14, 16, 17, 19, 26, 29], var ratio: 1.1x
+=== Training outlier-aware draft ===
+  Step 0: 0.1103
+  Step 500: 0.0002
+  Step 1000: 0.0002
+  Step 1500: 0.0001
+  Step 2000: 0.0001
+  Step 2500: 0.0001
+=== Comparing ===
+                           Base    Outlier
+KL                       1.4806     0.0641
+Reward Ret               0.6554     0.6553
+Δ Retention                        -0.0001
+Saved to /sfs/weka/scratch/qzp4ta/speculative-mpc/experiment_results/

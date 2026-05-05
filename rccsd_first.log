@@ -1,0 +1,39 @@
+=== RCCSD First Experiment ===
+Start: Tue May  5 18:18:28 EDT 2026
+Device: cuda
+Loaded pretrained transformer transition
+
+=== Training Distributional Draft ===
+  Draft step 0: loss=0.3895
+  Draft step 1000: loss=0.0001
+  Draft step 2000: loss=0.0000
+  Draft step 3000: loss=0.0000
+  Draft step 4000: loss=0.0000
+
+=== Computing Target Distribution Envelope (H=20) ===
+Envelope mean range: [-0.184, 0.236]
+Envelope std range: [0.000, 0.023]
+
+=== Acceptance Rate Comparison (H=20) ===
+Traceback (most recent call last):
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/experiments/rccsd_experiment.py", line 553, in <module>
+    main()
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/experiments/rccsd_experiment.py", line 380, in main
+    results, w2_thresh = run_acceptance_experiment(
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/experiments/rccsd_experiment.py", line 225, in run_acceptance_experiment
+    kl_t = td.kl.kl_divergence(t_priors[t], d_dists)  # not batched per-step
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 193, in kl_divergence
+    return fun(p, q)
+           ^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 948, in _kl_independent_independent
+    result = kl_divergence(p.base_dist, q.base_dist)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 193, in kl_divergence
+    return fun(p, q)
+           ^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 469, in _kl_normal_normal
+    var_ratio = (p.scale / q.scale).pow(2)
+                 ~~~~~~~~^~~~~~~~~
+RuntimeError: The size of tensor a (512) must match the size of tensor b (20) at non-singleton dimension 1

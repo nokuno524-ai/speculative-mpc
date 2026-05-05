@@ -14,7 +14,7 @@ mkdir -p logs results
 
 source .venv/bin/activate
 
-# Install dependencies if needed
+# Install deps if needed
 pip install gymnasium[classic-control] -q 2>/dev/null
 
 echo "=== Speculative MPC: CartPole Training ==="

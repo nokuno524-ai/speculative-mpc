@@ -1,198 +1,255 @@
-"""Quick CartPole training script for speculative decoding experiments."""
+"""End-to-end CartPole-v1: train target → distill draft → benchmark."""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+import torch.distributions as td
 import numpy as np
 import gymnasium as gym
-from torch.utils.data import DataLoader, TensorDataset
-import time
-import json
-import os
+import time, json, random
+from collections import deque
 
 from src.rssm import RSSM
 from src.draft_model import DraftRSSM
-from src.train import train_rssm, distill_draft
-from src.acceptance import speculative_rollout
+from src.cem_planner import CEMPlanner
 
 
-def collect_data(env_name='CartPole-v1', n_episodes=200, max_steps=500):
-    """Collect trajectories from random policy."""
-    env = gym.make(env_name)
-    all_obs, all_actions, all_rewards, all_next_obs = [], [], [], []
-    
-    for ep in range(n_episodes):
-        obs, _ = env.reset()
-        for t in range(max_steps):
-            action = env.action_space.sample()
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            
-            all_obs.append(obs.astype(np.float32))
-            all_actions.append(np.array([action], dtype=np.float32))
-            all_rewards.append(np.array([reward], dtype=np.float32))
-            all_next_obs.append(next_obs.astype(np.float32))
-            
-            obs = next_obs
-            if terminated or truncated:
-                break
-    
-    env.close()
-    return (
-        torch.tensor(np.array(all_obs)),
-        torch.tensor(np.array(all_actions)),
-        torch.tensor(np.array(all_rewards)),
-        torch.tensor(np.array(all_next_obs)),
-    )
+# ─── Replay Buffer ────────────────────────────────────────────────────────────
+class ReplayBuffer:
+    def __init__(self, capacity=100000):
+        self.buffer = deque(maxlen=capacity)
+
+    def add_episode(self, observations, actions, rewards):
+        """Store an entire episode."""
+        for t in range(len(rewards)):
+            self.buffer.append((
+                observations[t].astype(np.float32),
+                np.array([actions[t]], dtype=np.float32),
+                np.float32(rewards[t]),
+                observations[t + 1].astype(np.float32) if t + 1 < len(observations) else observations[t].astype(np.float32),
+            ))
+
+    def sample_sequences(self, batch_size, seq_len):
+        """Sample random sequences of length seq_len."""
+        obs_seq, act_seq, rew_seq = [], [], []
+        n = len(self.buffer)
+        for _ in range(batch_size):
+            start = random.randint(0, max(0, n - seq_len - 1))
+            o, a, r = [], [], []
+            for t in range(start, min(start + seq_len, n)):
+                obs, act, reward, _ = self.buffer[t]
+                o.append(obs)
+                a.append(act)
+                r.append(reward)
+            # Pad if needed
+            while len(o) < seq_len:
+                o.append(o[-1])
+                a.append(a[-1])
+                r.append(np.float32(0.0))
+            obs_seq.append(np.stack(o))
+            act_seq.append(np.stack(a))
+            rew_seq.append(np.array(r, dtype=np.float32))
+        return (
+            torch.FloatTensor(np.stack(obs_seq)),
+            torch.FloatTensor(np.stack(act_seq)),
+            torch.FloatTensor(np.stack(rew_seq)),
+        )
+
+    def sample_single(self, batch_size):
+        """Sample single transitions."""
+        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+        obs, act, rew, _ = zip(*batch)
+        return (
+            torch.FloatTensor(np.array(obs)),
+            torch.FloatTensor(np.array(act)),
+            torch.FloatTensor(np.array(rew)),
+        )
+
+    def __len__(self):
+        return len(self.buffer)
 
 
-def make_sequences(obs, actions, rewards, next_obs, seq_len=20):
-    """Convert flat data into sequences for RNN training."""
-    n = len(obs) - seq_len
-    obs_seq = torch.stack([obs[i:i+seq_len] for i in range(0, n, seq_len)])
-    act_seq = torch.stack([actions[i:i+seq_len] for i in range(0, n, seq_len)])
-    rew_seq = torch.stack([rewards[i:i+seq_len] for i in range(0, n, seq_len)])
-    nxt_seq = torch.stack([next_obs[i:i+seq_len] for i in range(0, n, seq_len)])
-    return obs_seq, act_seq, rew_seq, nxt_seq
+# ─── Training Functions ───────────────────────────────────────────────────────
+def train_target(model, buffer, n_epochs=100, batch_size=128, seq_len=20, lr=3e-4, device='cpu'):
+    """Train target RSSM on collected data."""
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    model.train()
+
+    for epoch in range(n_epochs):
+        obs, acts, rews = buffer.sample_sequences(batch_size, seq_len)
+        obs, acts, rews = obs.to(device), acts.to(device), rews.to(device)
+        B, T = obs.shape[:2]
+
+        optimizer.zero_grad()
+        det, stoch = model.initial_state(B, device)
+
+        kl_loss = torch.tensor(0.0, device=device)
+        reward_loss = torch.tensor(0.0, device=device)
+
+        for t in range(T):
+            # Posterior step
+            det, stoch, posterior = model.observe(obs[:, t], det, stoch, acts[:, t])
+            # Prior (no obs)
+            _, _, prior = model.imagine(det, stoch, torch.zeros_like(acts[:, t]))
+
+            kl_loss += td.kl.kl_divergence(posterior, prior).mean()
+            pred_reward = model.get_reward(det, stoch)
+            reward_loss += F.mse_loss(pred_reward, rews[:, t])
+
+        kl_loss = kl_loss / T
+        reward_loss = reward_loss / T
+        loss = reward_loss + 0.1 * kl_loss  # KL weight
+
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), 100.0)
+        optimizer.step()
+
+        if (epoch + 1) % 25 == 0:
+            print(f"  Target epoch {epoch+1}/{n_epochs} | Loss: {loss.item():.4f} | KL: {kl_loss.item():.4f} | Rew: {reward_loss.item():.4f}")
 
 
+def distill_draft(target, draft, buffer, n_epochs=80, batch_size=128, seq_len=20, lr=1e-3, device='cpu'):
+    """Distill target into draft via state alignment."""
+    optimizer = optim.Adam(draft.parameters(), lr=lr)
+    target.eval()
+    draft.train()
+
+    for epoch in range(n_epochs):
+        obs, acts, rews = buffer.sample_sequences(batch_size, seq_len)
+        obs, acts = obs.to(device), acts.to(device)
+        B, T = obs.shape[:2]
+
+        optimizer.zero_grad()
+
+        # Get target stochastic states as reference
+        with torch.no_grad():
+            tgt_det, tgt_stoch = target.initial_state(B, device)
+            target_stochs = []
+            for t in range(T):
+                tgt_det, tgt_stoch, _ = target.observe(obs[:, t], tgt_det, tgt_stoch, acts[:, t])
+                target_stochs.append(tgt_stoch)
+            target_stochs = torch.stack(target_stochs, dim=1)  # [B, T, stoch_dim]
+
+        # Run draft, project to target space, align
+        drf_det, drf_stoch = draft.initial_state(B, device)
+        align_loss = torch.tensor(0.0, device=device)
+
+        for t in range(T):
+            drf_det, drf_stoch, _ = draft.imagine(drf_det, drf_stoch, acts[:, t])
+            projected = draft.project_to_target(drf_stoch)
+            align_loss += F.mse_loss(projected, target_stochs[:, t])
+
+        align_loss = align_loss / T
+        align_loss.backward()
+        nn.utils.clip_grad_norm_(draft.parameters(), 100.0)
+        optimizer.step()
+
+        if (epoch + 1) % 20 == 0:
+            print(f"  Distill epoch {epoch+1}/{n_epochs} | Alignment Loss: {align_loss.item():.4f}")
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"=== Speculative MPC: CartPole-v1 ===")
     print(f"Device: {device}")
-    
-    # Hyperparameters
-    OBS_DIM = 4      # CartPole observation dim
-    ACT_DIM = 1      # CartPole action dim (discrete encoded as scalar)
-    DET_DIM = 64
-    STOCH_DIM = 16
-    HIDDEN_DIM = 64
-    
-    # Step 1: Collect data
-    print("Collecting CartPole data...")
-    obs, actions, rewards, next_obs = collect_data(n_episodes=100)
-    print(f"Collected {len(obs)} transitions")
-    
-    # Make sequences
-    obs_seq, act_seq, rew_seq, nxt_seq = make_sequences(obs, actions, rewards, next_obs, seq_len=20)
-    dataset = TensorDataset(obs_seq, act_seq, rew_seq, nxt_seq)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-    
-    # Step 2: Train target RSSM
-    print("\n=== Training Target RSSM ===")
-    target = RSSM(OBS_DIM, ACT_DIM, det_dim=DET_DIM, stoch_dim=STOCH_DIM, hidden_dim=HIDDEN_DIM)
-    n_params = sum(p.numel() for p in target.parameters())
-    print(f"Target params: {n_params:,}")
-    train_rssm(target, dataloader, n_epochs=50, lr=3e-4, device=device)
-    
-    # Step 3: Train draft RSSM (4x smaller)
-    print("\n=== Distilling Draft RSSM ===")
-    draft = DraftRSSM(OBS_DIM, ACT_DIM, det_dim=DET_DIM//4, stoch_dim=STOCH_DIM//4, hidden_dim=HIDDEN_DIM//4)
-    n_params_draft = sum(p.numel() for p in draft.parameters())
-    print(f"Draft params: {n_params_draft:,} ({n_params_draft/n_params:.1%} of target)")
-    distill_draft(target, draft, dataloader, n_epochs=30, lr=1e-3, device=device)
-    
-    # Step 4: Benchmark speculative decoding
-    print("\n=== Benchmarking Speculative Decoding ===")
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name()}")
+
+    env = gym.make("CartPole-v1")
+    obs_dim = env.observation_space.shape[0]  # 4
+    act_dim = 1  # continuous action (maps discrete to [-1, 1])
+
+    # Model configs
+    target_det_dim, target_stoch_dim = 200, 30
+    draft_det_dim, draft_stoch_dim = 50, 16
+
+    target = RSSM(obs_dim, act_dim, det_dim=target_det_dim, stoch_dim=target_stoch_dim).to(device)
+    draft = DraftRSSM(act_dim, det_dim=draft_det_dim, stoch_dim=draft_stoch_dim,
+                      target_stoch_dim=target_stoch_dim).to(device)
+
+    n_target = sum(p.numel() for p in target.parameters())
+    n_draft = sum(p.numel() for p in draft.parameters())
+    print(f"\nTarget params: {n_target:,}")
+    print(f"Draft params:  {n_draft:,} ({n_draft/n_target:.1%} of target)")
+
+    # ─── Collect data ─────────────────────────────────────────────────────
+    buffer = ReplayBuffer(100000)
+    print("\n--- Collecting CartPole data ---")
+    for ep in range(200):
+        obs_list, act_list, rew_list = [env.reset()[0]], [], []
+        obs = obs_list[0]
+        done = False
+        while not done:
+            # Map discrete action to continuous
+            action = float(env.action_space.sample())  # 0 or 1
+            action_cont = action * 2.0 - 1.0  # map to [-1, 1]
+            next_obs, reward, term, trunc, _ = env.step(int(action))
+            act_list.append(action_cont)
+            rew_list.append(reward)
+            obs_list.append(next_obs)
+            obs = next_obs
+            done = term or trunc
+        buffer.add_episode(
+            np.array(obs_list),
+            np.array(act_list),
+            np.array(rew_list),
+        )
+    print(f"Collected {len(buffer)} transitions from 200 episodes")
+
+    # ─── Train target ─────────────────────────────────────────────────────
+    print("\n--- Training Target RSSM ---")
+    train_target(target, buffer, n_epochs=100, device=device)
+
+    # ─── Distill draft ────────────────────────────────────────────────────
+    print("\n--- Distilling Draft RSSM ---")
+    distill_draft(target, draft, buffer, n_epochs=80, device=device)
+
+    # ─── Benchmark ────────────────────────────────────────────────────────
+    print("\n--- Benchmarking ---")
     target.eval()
     draft.eval()
-    
-    HORIZON = 12
-    N_BATCH = 64
-    
-    # Create test data
-    test_obs = obs[:N_BATCH].to(device)
-    test_actions = torch.randn(N_BATCH, HORIZON, ACT_DIM, device=device)
-    
-    # Initialize states
-    det_0, stoch_0 = target.initial_state(N_BATCH, device)
-    
-    # Target-only baseline timing
-    times_target = []
-    for _ in range(20):
-        t0 = time.time()
-        det, stoch = det_0.clone(), stoch_0.clone()
-        for t in range(HORIZON):
-            det, stoch, _ = target.imagine(det, stoch, test_actions[:, t])
-        torch.cuda.synchronize() if device == 'cuda' else None
-        times_target.append(time.time() - t0)
-    
-    target_time = np.median(times_target)
-    
-    # Speculative timing
-    times_spec = []
-    for _ in range(20):
-        t0 = time.time()
-        with torch.no_grad():
-            final_dets, final_stochs, stats = speculative_rollout(
-                target, draft, det_0, stoch_0, test_actions,
-                eps_base=0.5, alpha=0.02
-            )
-        torch.cuda.synchronize() if device == 'cuda' else None
-        times_spec.append(time.time() - t0)
-    
-    spec_time = np.median(times_spec)
-    speedup = target_time / max(spec_time, 1e-8)
-    
-    # Reward comparison
-    with torch.no_grad():
-        # Target-only rewards
-        det, stoch = det_0.clone(), stoch_0.clone()
-        target_rewards = []
-        for t in range(HORIZON):
-            det, stoch, _ = target.imagine(det, stoch, test_actions[:, t])
-            target_rewards.append(target.get_reward(det, stoch))
-        target_returns = torch.stack(target_rewards, dim=1).sum(dim=1)
-        
-        # Speculative rewards (re-evaluate accepted trajectory)
-        spec_dets, spec_stochs, stats = speculative_rollout(
-            target, draft, det_0, stoch_0, test_actions, eps_base=0.5, alpha=0.02
-        )
-        spec_rewards = []
-        for t in range(HORIZON):
-            r = target.get_reward(spec_dets[:, t], spec_stochs[:, t])
-            spec_rewards.append(r)
-        spec_returns = torch.stack(spec_rewards, dim=1).sum(dim=1)
-    
-    reward_ratio = (spec_returns / (target_returns.abs() + 1e-8)).mean().item()
-    reward_corr = torch.corrcoef(torch.stack([target_returns, spec_returns]))[0, 1].item()
-    
-    results = {
-        'target_params': n_params,
-        'draft_params': n_params_draft,
-        'size_ratio': n_params_draft / n_params,
-        'target_time_ms': target_time * 1000,
-        'speculative_time_ms': spec_time * 1000,
-        'speedup': speedup,
-        'acceptance_rate': stats['avg_acceptance_rate'],
-        'mean_kl': stats['mean_kl'],
-        'reward_ratio': reward_ratio,
-        'reward_correlation': reward_corr,
-        'horizon': HORIZON,
-        'n_batch': N_BATCH,
-    }
-    
+
+    planner = CEMPlanner(target, draft, horizon=12, n_samples=64, action_dim=act_dim)
+    det_0, stoch_0 = target.initial_state(64, device)
+
+    bench = planner.benchmark(det_0, stoch_0, n_trials=50, batch_size=64)
+
     print(f"\n{'='*50}")
-    print(f"RESULTS SUMMARY")
+    print(f"RESULTS")
     print(f"{'='*50}")
-    print(f"Target params: {n_params:,}")
-    print(f"Draft params:  {n_params_draft:,} ({n_params_draft/n_params:.1%} of target)")
-    print(f"Target-only time:    {target_time*1000:.2f} ms")
-    print(f"Speculative time:    {spec_time*1000:.2f} ms")
-    print(f"Speedup:             {speedup:.2f}x")
-    print(f"Acceptance rate:     {stats['avg_acceptance_rate']:.2%}")
-    print(f"Mean KL:             {stats['mean_kl']:.4f}")
-    print(f"Reward ratio:        {reward_ratio:.4f}")
-    print(f"Reward correlation:  {reward_corr:.4f}")
+    print(f"Target params:      {n_target:,}")
+    print(f"Draft params:       {n_draft:,} ({n_draft/n_target:.1%})")
+    print(f"Target time:        {bench['target_time_ms']:.2f} ms")
+    print(f"Speculative time:   {bench['speculative_time_ms']:.2f} ms")
+    print(f"Speedup:            {bench['speedup']:.2f}x")
+    print(f"Acceptance rate:    {bench['acceptance_rate']:.1%}")
+    print(f"Mean KL:            {bench['mean_kl']:.4f}")
     print(f"{'='*50}")
-    
+
     # Save results
-    os.makedirs('/scratch/qzp4ta/speculative-mpc/results', exist_ok=True)
-    with open('/scratch/qzp4ta/speculative-mpc/results/benchmark.json', 'w') as f:
+    results = {
+        'target_params': n_target,
+        'draft_params': n_draft,
+        'size_ratio': n_draft / n_target,
+        'target_time_ms': bench['target_time_ms'],
+        'speculative_time_ms': bench['speculative_time_ms'],
+        'speedup': bench['speedup'],
+        'acceptance_rate': bench['acceptance_rate'],
+        'mean_kl': bench['mean_kl'],
+    }
+    results_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'results', 'results.json')
+    os.makedirs(os.path.dirname(results_path), exist_ok=True)
+    with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
-    print("Results saved to results/benchmark.json")
-    
-    # Save models
-    torch.save(target.state_dict(), '/scratch/qzp4ta/speculative-mpc/results/target_rssm.pt')
-    torch.save(draft.state_dict(), '/scratch/qzp4ta/speculative-mpc/results/draft_rssm.pt')
-    print("Models saved.")
+    print(f"Results saved to {results_path}")
+
+    env.close()
+    print("Done!")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

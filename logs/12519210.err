@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train_cartpole.py", line 18, in <module>
+    from src.acceptance import compute_acceptance
+ImportError: cannot import name 'compute_acceptance' from 'src.acceptance' (/sfs/weka/scratch/qzp4ta/speculative-mpc/src/acceptance.py)

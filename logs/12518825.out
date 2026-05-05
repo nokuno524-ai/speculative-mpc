@@ -1,0 +1,12 @@
+=== Speculative MPC: CartPole Training ===
+Job ID: 12518825
+Node: udc-an38-1
+GPU: NVIDIA RTX A6000
+Start: Tue May  5 02:07:08 EDT 2026
+Device: cuda
+Collecting CartPole data...
+Collected 2101 transitions
+
+=== Training Target RSSM ===
+Target params: 83,225
+End: Tue May  5 02:07:49 EDT 2026

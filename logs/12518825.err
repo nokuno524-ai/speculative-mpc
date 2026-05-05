@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train_cartpole.py", line 198, in <module>
+    main()
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train_cartpole.py", line 82, in main
+    train_rssm(target, dataloader, n_epochs=50, lr=3e-4, device=device)
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train.py", line 38, in train_rssm
+    det, stoch, posterior = model.observe(obs[:, t], det, stoch, actions[:, t])
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/rssm.py", line 49, in observe
+    post_std = torch.softplus(post_std) + 0.1
+               ^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/__init__.py", line 2881, in __getattr__
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+AttributeError: module 'torch' has no attribute 'softplus'

@@ -1,0 +1,25 @@
+=== Speculative MPC: CartPole Training ===
+Job ID: 12518939
+Node: udc-an38-1
+GPU: NVIDIA RTX A6000
+Start: Tue May  5 02:10:29 EDT 2026
+Device: cuda
+Collecting CartPole data...
+Collected 2271 transitions
+
+=== Training Target RSSM ===
+Target params: 83,225
+Epoch 10/50 | Loss: 0.1058 | KL: 0.0888 | Reward: 0.0170
+Epoch 20/50 | Loss: 0.0435 | KL: 0.0403 | Reward: 0.0032
+Epoch 30/50 | Loss: 0.0236 | KL: 0.0214 | Reward: 0.0022
+Epoch 40/50 | Loss: 0.0145 | KL: 0.0129 | Reward: 0.0016
+Epoch 50/50 | Loss: 0.0095 | KL: 0.0083 | Reward: 0.0013
+
+=== Distilling Draft RSSM ===
+Draft params: 1,597 (1.9% of target)
+Distill Epoch 10/30 | Alignment Loss: 0.8490
+Distill Epoch 20/30 | Alignment Loss: 0.7400
+Distill Epoch 30/30 | Alignment Loss: 0.7165
+
+=== Benchmarking Speculative Decoding ===
+End: Tue May  5 02:10:57 EDT 2026

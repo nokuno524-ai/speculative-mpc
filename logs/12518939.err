@@ -1,0 +1,35 @@
+/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train.py:49: UserWarning: Using a target size (torch.Size([32, 1])) that is different to the input size (torch.Size([32])). This will likely lead to incorrect results due to broadcasting. Please ensure they have the same size.
+  reward_loss += F.mse_loss(pred_reward, rewards[:, t])
+/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train.py:49: UserWarning: Using a target size (torch.Size([17, 1])) that is different to the input size (torch.Size([17])). This will likely lead to incorrect results due to broadcasting. Please ensure they have the same size.
+  reward_loss += F.mse_loss(pred_reward, rewards[:, t])
+/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/numpy/_core/fromnumeric.py:3824: RuntimeWarning: Mean of empty slice
+  return _methods._mean(a, axis=axis, dtype=dtype,
+/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/numpy/_core/_methods.py:142: RuntimeWarning: invalid value encountered in scalar divide
+  ret = ret.dtype.type(ret / rcount)
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train_cartpole.py", line 198, in <module>
+    main()
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/train_cartpole.py", line 123, in main
+    final_dets, final_stochs, stats = speculative_rollout(
+                                      ^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/acceptance.py", line 84, in speculative_rollout
+    valid_mask, accepted_lengths, kl_divs = evaluate_and_accept(
+                                            ^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/src/acceptance.py", line 25, in evaluate_and_accept
+    kl_divs = td.kl.kl_divergence(target_dists, draft_dists)  # [B, H]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 193, in kl_divergence
+    return fun(p, q)
+           ^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 948, in _kl_independent_independent
+    result = kl_divergence(p.base_dist, q.base_dist)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 193, in kl_divergence
+    return fun(p, q)
+           ^^^^^^^^^
+  File "/sfs/weka/scratch/qzp4ta/speculative-mpc/.venv/lib/python3.12/site-packages/torch/distributions/kl.py", line 469, in _kl_normal_normal
+    var_ratio = (p.scale / q.scale).pow(2)
+                 ~~~~~~~~^~~~~~~~~
+RuntimeError: The size of tensor a (16) must match the size of tensor b (4) at non-singleton dimension 2

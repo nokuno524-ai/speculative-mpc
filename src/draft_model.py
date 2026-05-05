@@ -1,85 +1,92 @@
-"""Distilled shallow RSSM (4x smaller) for speculative drafting."""
+"""Distilled shallow RSSM for speculative drafting."""
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.distributions as td
 
 
 class DraftRSSM(nn.Module):
-    """Lightweight RSSM for fast speculative rollouts.
-    
-    4x smaller than target: smaller det_dim, stoch_dim, hidden_dim.
-    Trained via distillation (KL matching to target).
+    """Lightweight RSSM (~4x smaller) trained via distillation.
+
+    Has its own latent space with projections to/from target space.
     """
-    def __init__(self, obs_dim, act_dim, det_dim=50, stoch_dim=16, hidden_dim=50):
+
+    def __init__(self, act_dim, det_dim=50, stoch_dim=16, target_stoch_dim=None):
         super().__init__()
         self.det_dim = det_dim
         self.stoch_dim = stoch_dim
-        self.target_stoch_dim = None  # set during distillation
-        
-        # Minimal networks
-        self.obs_encoder = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim), nn.ELU(),
-        )
-        self.posterior_net = nn.Linear(hidden_dim + det_dim, 2 * stoch_dim)
+        self.target_stoch_dim = target_stoch_dim
+
         self.prior_net = nn.Linear(det_dim, 2 * stoch_dim)
         self.gru = nn.GRUCell(stoch_dim + act_dim, det_dim)
-        
-        # Projection to align with target latent space
-        self.project_to_target = nn.Linear(stoch_dim, 1)  # set dynamically
-        self.project_from_target = nn.Linear(1, stoch_dim)
-        self._projections_set = False
-    
-    def set_target_stoch_dim(self, target_stoch_dim):
-        """Initialize projection layers to match target's stoch_dim."""
-        self.target_stoch_dim = target_stoch_dim
-        self.project_to_target = nn.Linear(self.stoch_dim, target_stoch_dim)
-        self.project_from_target = nn.Linear(target_stoch_dim, self.stoch_dim)
-        self._projections_set = True
-    
+
+        # Projections to align with target latent space
+        if target_stoch_dim is not None:
+            self.project_to_target = nn.Linear(stoch_dim, target_stoch_dim)
+            self.project_from_target = nn.Linear(target_stoch_dim, stoch_dim)
+        else:
+            self.project_to_target = None
+            self.project_from_target = None
+
     def initial_state(self, batch_size, device):
         det = torch.zeros(batch_size, self.det_dim, device=device)
         stoch = torch.zeros(batch_size, self.stoch_dim, device=device)
         return det, stoch
-    
+
     def imagine(self, prev_det, prev_stoch, action):
-        """Single imagination step."""
+        """Single imagination step with sampling."""
         det = self.gru(torch.cat([prev_stoch, action], dim=-1), prev_det)
         prior_params = self.prior_net(det)
-        prior_mean, prior_std = prior_params.chunk(2, dim=-1)
-        prior_std = torch.softplus(prior_std) + 0.1
-        prior = td.Independent(td.Normal(prior_mean, prior_std), 1)
+        prior = self._parse_dist(prior_params)
         stoch = prior.rsample()
         return det, stoch, prior
-    
+
     def imagine_deterministic(self, prev_det, prev_stoch, action):
-        """Use mean instead of sample for more stable drafting."""
+        """Single imagination step using mean (stable for drafting)."""
         det = self.gru(torch.cat([prev_stoch, action], dim=-1), prev_det)
         prior_params = self.prior_net(det)
-        prior_mean, prior_std = prior_params.chunk(2, dim=-1)
-        prior_std = torch.softplus(prior_std) + 0.1
-        prior = td.Independent(td.Normal(prior_mean, prior_std), 1)
-        stoch = prior_mean  # deterministic for drafting stability
+        prior = self._parse_dist(prior_params)
+        stoch = prior.mean  # deterministic for stable drafting
         return det, stoch, prior
-    
+
     def unroll_draft(self, det_0, stoch_0, actions):
-        """Fast autoregressive drafting: actions [B, H, act_dim].
-        
-        Returns: priors list, (dets, stochs, target_stochs)
+        """Fast autoregressive drafting with deterministic mean.
+
+        Args:
+            det_0, stoch_0: initial states [B, dim] (draft space)
+            actions: [B, H, act_dim]
+
+        Returns:
+            target_priors: list of H Independent Normal distributions (in target stoch space)
+            dets: [B, H, det_dim]
+            stochs: [B, H, stoch_dim]  (draft space)
+            target_stochs: [B, H, target_stoch_dim] or None
         """
         B, H, _ = actions.shape
         det, stoch = det_0, stoch_0
-        priors = []
-        dets, stochs, target_stochs = [], [], []
-        
+        target_priors, dets, stochs, target_stochs = [], [], [], []
+
         for t in range(H):
             det, stoch, prior = self.imagine_deterministic(det, stoch, actions[:, t])
-            priors.append(prior)
             dets.append(det)
             stochs.append(stoch)
-            if self._projections_set:
-                target_stochs.append(self.project_to_target(stoch))
-        
+            if self.project_to_target is not None:
+                tgt_s = self.project_to_target(stoch)
+                target_stochs.append(tgt_s)
+                # Project prior distribution to target space
+                tgt_mean = self.project_to_target(prior.mean)
+                # Approximate std via Jacobian (diagonal approximation)
+                tgt_std = self.project_to_target(prior.stddev).abs() + 0.1
+                target_priors.append(td.Independent(td.Normal(tgt_mean, tgt_std), 1))
+            else:
+                target_priors.append(prior)
+
         dets = torch.stack(dets, dim=1)
         stochs = torch.stack(stochs, dim=1)
-        target_stochs = torch.stack(target_stochs, dim=1) if self._projections_set else None
-        return priors, (dets, stochs, target_stochs)
+        tgt = torch.stack(target_stochs, dim=1) if self.project_to_target is not None else None
+        return target_priors, dets, stochs, tgt
+
+    def _parse_dist(self, params):
+        mean, std = params.chunk(2, dim=-1)
+        std = F.softplus(std) + 0.1
+        return td.Independent(td.Normal(mean, std), 1)
